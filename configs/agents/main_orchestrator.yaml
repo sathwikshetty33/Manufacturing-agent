@@ -1,0 +1,170 @@
+# ===============================================================
+# Manufacturing Orchestrator Agent - Solace Agent Mesh Config
+# ===============================================================
+
+log:
+  stdout_log_level: INFO
+  log_file_level: INFO
+  log_file: orchestrator-agent.log
+
+# Shared SAM base config
+!include ../shared_config.yaml
+
+apps:
+  - name: manufacturing-orchestrator-app
+    app_base_path: .
+    app_module: solace_agent_mesh.agent.sac.app
+
+    broker:
+      <<: *broker_connection
+
+    app_config:
+      namespace: ${NAMESPACE}
+      supports_streaming: true
+
+      agent_name: "ManufacturingOrchestrator"
+      display_name: "ManufacturingOrchestrator"
+
+      # Preferred LLM for orchestration
+      model: *planning_model
+
+      # ===========================================================
+      #  MANUFACTURING-SPECIFIC ORCHESTRATOR INSTRUCTIONS
+      # ===========================================================
+      instruction: |
+        You are the **Manufacturing Orchestrator Agent** in an AI-driven industrial orchestration system.
+
+        ======================================================================
+        CRITICAL RULES FOR ALL FORECASTING & DATA INPUTS
+        ======================================================================
+        - When the user provides a CSV URL, ALWAYS PASS IT EXACTLY AS RECEIVED.
+        - DO NOT rewrite, transform, sanitize, reformat, or convert the URL.
+        - DO NOT replace the URL with a local file path or artifact path.
+        - DO NOT attempt to map GitHub URLs to local filesystem paths.
+        - DO NOT modify dates provided by the user; pass them unchanged.
+        - If the user provides a RAW GitHub link (https://raw.githubusercontent...), 
+          pass it AS-IS to the DemandForecastingAgent.
+        - ABSOLUTELY NO automatic inference or rewriting of file paths.
+
+        These rules ensure correct operation when using the REST Gateway, WebUI,
+        external applications, and automated pipelines.
+
+        ======================================================================
+        CORE RESPONSIBILITIES
+        ======================================================================
+
+        1. **Task Routing**
+           Decide whether a request should be handled by:
+             a. A specialized agent  
+             b. A multi-agent workflow  
+             c. Yourself, if trivial
+
+        2. **Manufacturing Domain Understanding**
+           Know how to reason about:
+           - Demand forecasting  
+           - Production scheduling  
+           - Inventory management  
+           - Capacity planning  
+           - Logistics & dispatch  
+           - Quality control  
+           - MRP (materials planning)
+
+        3. **Single Agent Delegation**
+           If the task clearly belongs to one agent, delegate directly.
+
+        4. **Multi-Agent Workflow Execution**
+           Build step-by-step workflows for:
+             - Planning production
+             - Weekly manufacturing plans
+             - Stockout prevention
+             - Handling sudden demand spikes
+           Orchestrate calls between:
+             - DemandForecastingAgent
+             - InventoryAgent
+             - SchedulingAgent
+             - LogisticsAgent
+
+        5. **Event-Driven Behavior**
+           React to:
+             - inventory.low
+             - order.created
+             - demand.forecast.completed
+             - machine.status.updated
+
+        6. **Artifact Management**
+           Use:
+             - list_artifacts
+             - save_artifact
+             - load_artifact
+             - artifact_return
+           Return only meaningful artifacts to the user.
+
+        7. **Status Updates**
+           Before using any tool or delegating work, always send a `status_update`
+           explaining what is being done.
+
+        ======================================================================
+
+
+      inject_system_purpose: true
+      inject_response_format: true
+      inject_user_profile: true
+
+      # ===========================================================
+      # PERSISTENCE LAYERS & SERVICES
+      # ===========================================================
+      session_service:
+        type: "sql"
+        database_url: "${ORCHESTRATOR_DATABASE_URL, sqlite:///orchestrator.db}"
+        default_behavior: "PERSISTENT"
+
+      artifact_service: *default_artifact_service
+      artifact_handling_mode: "reference"
+      enable_embed_resolution: true
+      enable_artifact_content_instruction: true
+      data_tools_config: *default_data_tools_config
+
+      # ===========================================================
+      # BUILT-IN TOOLS (artifact + data ops)
+      # ===========================================================
+      tools:
+        - group_name: artifact_management
+          tool_type: builtin-group
+        - group_name: data_analysis
+          tool_type: builtin-group
+
+      # ===========================================================
+      # ORCHESTRATOR CAPABILITIES / AGENT CARD
+      # ===========================================================
+      agent_card:
+        description: "The central orchestrator for the manufacturing agent network. Manages domain-specific workflows and coordinates all manufacturing agents."
+
+        defaultInputModes: [text]
+        defaultOutputModes: [text, file]
+
+        skills:
+          - id: manufacturing_planning
+            name: Manufacturing Planning
+            description: Understands and coordinates manufacturing workflows including forecasting, capacity planning, scheduling, inventory control, and logistics.
+
+          - id: agent_coordination
+            name: Manufacturing Agent Coordination
+            description: Chooses and sequences specialized agents to complete tasks like demand forecasting, production scheduling, inventory optimization, etc.
+
+          - id: strategic_workflow_execution
+            name: Strategic Workflow Execution
+            description: Builds multi-step execution plans for manufacturing pipelines and manages data handoffs between agents.
+
+          - id: artifact_management
+            name: Manufacturing Artifact Management
+            description: Manages production schedules, demand forecasts, BOMs, SKU datasets, and planning artifacts.
+
+      agent_card_publishing:
+        interval_seconds: 10
+
+      agent_discovery:
+        enabled: true
+
+      inter_agent_communication:
+        allow_list: ["*"]
+        request_timeout_seconds: 600

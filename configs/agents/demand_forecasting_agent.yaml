@@ -1,0 +1,189 @@
+# ===============================================================
+# Demand Forecasting Agent - Solace Agent Mesh Agent Configuration
+# (loop-free, binds tasks to Python module: custom_tools.demand_forecasting_agent.tasks)
+# ===============================================================
+
+log:
+  stdout_log_level: INFO
+  log_file_level: INFO
+  log_file: demand_forecasting_agent.log
+
+!include ../shared_config.yaml
+
+apps:
+  - name: "DemandForecastingAgent_app"
+    app_base_path: .
+    app_module: solace_agent_mesh.agent.sac.app
+
+    broker:
+      <<: *broker_connection
+
+    app_config:
+      namespace: "${NAMESPACE}"
+      supports_streaming: true
+
+      agent_name: "DemandForecastingAgent"
+      display_name: "Demand Forecasting Agent"
+
+      model: *planning_model
+
+      # Force SAM to prefer task/tool execution over LLM-only responses
+      # (best-effort setting for the runtime)
+      force_tool_usage_for_tasks: true
+      force_task_execution: true
+
+      # Tell SAM which Python module contains your task implementations
+      task_modules:
+        - custom_tools.demand_forecasting_agent.tasks
+
+      # ===========================================================
+      # Core Behavior & Routing — prevents infinite delegation loops
+      # ===========================================================
+      instruction: |
+        You are the Demand Forecasting Agent.
+
+        HARD RULES (must be followed exactly):
+        1. NEVER delegate a forecast request back to the Orchestrator or to any other agent.
+           All forecasting requests must be handled locally by calling the Python tools bound to this agent.
+        2. ALWAYS call the appropriate task/tool for the user's request:
+           - YYYY-MM-DD  -> call the task `generate_forecast` (wrapper) which must call `daily_forecast`.
+           - YYYY-MM     -> call the task `generate_forecast` which must call `monthly_forecast`.
+           - YYYY        -> call the task `generate_forecast` which must call `yearly_forecast`.
+        3. Do NOT attempt to generate numeric forecasts using pure LLM reasoning or built-in data-analysis tools.
+        4. If a request arrives that is not a properly-formed task call, ask the user for `csv_url` and `target` in the specified format and then accept the `generate_forecast` task invocation.
+        5. Provide `status_update` before any long-running tool invocation and return artifacts using `artifact_return` when created.
+
+        Output format (JSON):
+        {
+          "target": "<date/month/year>",
+          "prediction": <number>,
+          "model_used": "<model-name>",
+          "confidence": <0.0-1.0 or null>,
+          "status": "success" | "error",
+          "artifact_refs": [ "<artifact-id>", ... ]
+        }
+
+      # ===========================================================
+      # Tools / Python Functions - these map to real functions
+      # (make sure the functions exist in custom_tools.demand_forecasting_agent.tasks)
+      # ===========================================================
+      tools:
+        - tool_type: python
+          tool_name: generate_forecast
+          tool_description: "Wrapper task: validate inputs and call daily/monthly/yearly forecast functions."
+          component_module: custom_tools.demand_forecasting_agent.tasks
+          function_name: generate_forecast
+
+        - tool_type: python
+          tool_name: daily_forecast
+          tool_description: "Predict demand for a specific date using ML (ARIMA)."
+          component_module: custom_tools.demand_forecasting_agent.tasks
+          function_name: daily_forecast
+
+        - tool_type: python
+          tool_name: monthly_forecast
+          tool_description: "Predict aggregated demand for a specific month using ML (ARIMA)."
+          component_module: custom_tools.demand_forecasting_agent.tasks
+          function_name: monthly_forecast
+
+        - tool_type: python
+          tool_name: yearly_forecast
+          tool_description: "Predict total demand for a year using ML (ARIMA)."
+          component_module: custom_tools.demand_forecasting_agent.tasks
+          function_name: yearly_forecast
+
+      # ===========================================================
+      # Storage / Artifacts / Services
+      # ===========================================================
+      session_service:
+        type: "sql"
+        default_behavior: "PERSISTENT"
+        database_url: "${DEMAND_FORECASTING_AGENT_DB, sqlite:///dforecast.db}"
+
+      artifact_service: *default_artifact_service
+      artifact_handling_mode: "reference"
+
+      enable_embed_resolution: true
+      enable_artifact_content_instruction: true
+      data_tools_config: *default_data_tools_config
+
+      # IMPORTANT: remove or avoid enabling the data_analysis builtin group to prevent
+      # the agent from using automatic CSV analysis tools instead of your ML functions.
+      # (If your runtime requires explicit builtin groups, ensure 'data_analysis' is not included.)
+      # tools: [ ... builtin groups ... ]  <-- intentionally omitted
+
+      # ===========================================================
+      # Task definitions exposed to the orchestrator / UI
+      # ===========================================================
+      tasks:
+        - name: generate_forecast
+          description: "Wrapper: takes csv_url + target and routes to daily/monthly/yearly forecasts."
+          parameters:
+            - name: csv_url
+              type: string
+            - name: target
+              type: string
+          returns: json
+
+        - name: daily_forecast
+          description: "Predict demand for a specific date using ML."
+          parameters:
+            - name: csv_url
+              type: string
+            - name: target_date
+              type: string
+          returns: json
+
+        - name: monthly_forecast
+          description: "Predict demand for a specific month using ML."
+          parameters:
+            - name: csv_url
+              type: string
+            - name: target_month
+              type: string
+          returns: json
+
+        - name: yearly_forecast
+          description: "Predict demand for a specific year using ML."
+          parameters:
+            - name: csv_url
+              type: string
+            - name: target_year
+              type: string
+          returns: json
+
+      # ===========================================================
+      # Agent Card & Discovery
+      # ===========================================================
+      agent_card:
+        description: |
+          Produces ML-based demand forecasts.
+          Supports daily, monthly, and yearly predictions using ARIMA.
+        defaultInputModes: [text]
+        defaultOutputModes: [text, file]
+        skills: []
+
+      agent_card_publishing:
+        interval_seconds: 10
+
+      agent_discovery:
+        enabled: true
+
+      inter_agent_communication:
+        allow_list: ["ManufacturingOrchestrator", "*"]
+        request_timeout_seconds: 600
+
+# ===============================================================
+# Usage / Example (quick test)
+# - Example CSV (generated previously in this session):
+#   /mnt/data/demo_demand.csv
+# - Example command (CLI):
+#   sam call DemandForecastingAgent.generate_forecast csv_url=/mnt/data/demo_demand.csv target=2025-11-23
+#
+# - Example direct tool call:
+#   sam call DemandForecastingAgent.daily_forecast csv_url=/mnt/data/demo_demand.csv target_date=2025-11-23
+#
+# - If you uploaded an image artifact earlier, its local path is:
+#   /mnt/data/22401131-95ce-451a-8e33-c6e1631caa79.png
+#   (use as an artifact reference if needed)
+# ===============================================================
