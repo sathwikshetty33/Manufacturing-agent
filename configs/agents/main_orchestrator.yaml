@@ -1,5 +1,198 @@
+# # ===============================================================
+# # Manufacturing Orchestrator Agent - Solace Agent Mesh Config
+# # (Loop-safe, flexible forecasting->scheduling routing, uses peer_agent_delegation)
+# # ===============================================================
+
+# log:
+#   stdout_log_level: INFO
+#   log_file_level: INFO
+#   log_file: orchestrator-agent.log
+
+# !include ../shared_config.yaml
+
+# apps:
+#   - name: manufacturing-orchestrator-app
+#     app_base_path: .
+#     app_module: solace_agent_mesh.agent.sac.app
+
+#     broker:
+#       <<: *broker_connection
+
+#     app_config:
+#       namespace: ${NAMESPACE}
+#       supports_streaming: true
+
+#       agent_name: "ManufacturingOrchestrator"
+#       display_name: "ManufacturingOrchestrator"
+
+#       model: *planning_model
+
+#       # Prefer tool usage for deterministic behavior
+#       force_tool_usage: true
+#       force_tool_usage_for_tasks: true
+#       force_task_execution: true
+
+#       # ===========================================================
+#       # Orchestrator Instruction (flexible, loop-safe)
+#       # ===========================================================
+#       instruction: |
+#         You are the Manufacturing Orchestrator Agent. Your job is to
+#         decide when to call other agents and to execute the Forecast -> Schedule
+#         workflow reliably and without repeated retries or loops.
+
+#         Overview rules (keep concise & deterministic):
+#         - If the user's request is to "schedule" / "generate schedule" / "create schedule"
+#           and a CSV URL/path is provided, orchestrate these steps:
+#             1) Call DemandForecastingAgent.daily_forecast (or generate_forecast wrapper) EXACTLY ONCE.
+#             2) Extract numeric forecast value from the response (field: prediction).
+#             3) Call DynamicSchedulingAgent.generate_schedule_single_day with date and that numeric demand.
+#             4) Return the final schedule output to the user.
+
+#         - If user provides numeric demand directly, skip forecasting and call the scheduler directly.
+
+#         - If user asks only for forecasting, call only DemandForecastingAgent.
+
+#         - When delegating to another agent, ALWAYS use the peer-agent delegation tool (peer_agent_delegation). Do not narrate the steps — invoke the tool.
+
+#         - Do not treat agent responses as new user requests. Only user-originated messages trigger the pipeline.
+
+#         - Retry policy: up to 2 attempts per agent call. If both attempts fail, stop and report the error to the user.
+
+#         - Do not modify CSV URLs or local paths. Pass them EXACTLY as received.
+
+#         Implementation details you must follow (use these exact patterns):
+
+#         1) Detect user intent:
+#            - Consider scheduling intent present if the user's message contains (case-insensitive) any of:
+#              "schedule", "production plan", "generate schedule", "create schedule", "plan for", "shop floor plan"
+#            - Also check payload for a csv_url value or an attached CSV artifact.
+
+#         2) If scheduling intent AND a csv_url/path is available:
+#            - Set session key "orchestration_stage" → "forecasting_started" to avoid duplicate forecasting calls in the same user session.
+#              (If the session already has orchestration_stage == "forecasting_done" and a stored "forecast_prediction", skip forecasting.)
+#            - Use peer_agent_delegation to call DemandForecastingAgent.
+
+#            Example peer delegation call (use this exact natural-language prompt pattern; include the csv_url verbatim):
+#            ```
+#            »»»peer=DemandForecastingAgent
+#            task=generate_forecast
+#            params:
+#              csv_url: "<EXACT_CSV_URL_OR_PATH>"
+#              target: "<YYYY-MM-DD>"
+#            »»»
+#            ```
+#            (Note: transform the triple markers into whatever A2A wrapper your PeerAgentTool expects — the content above must be the prompt body.)
+
+#            - Wait for response. If error or missing prediction, retry once. If still fails, report to user and stop.
+
+#            - When successful, save prediction into session as "forecast_prediction" and set "orchestration_stage" → "forecasting_done".
+
+#         3) After forecasting success:
+#            - Extract numeric prediction = response["prediction"] (must be a number).
+#            - Call DynamicSchedulingAgent with peer_agent_delegation:
+
+#            Example scheduler delegation prompt:
+#            ```
+#            »»»peer=DynamicSchedulingAgent
+#            task=generate_schedule_single_day
+#            params:
+#              date: "<YYYY-MM-DD>"
+#              demand: <numeric_prediction>
+#              machines: <optional_int_or_default>
+#              throughput_per_machine: <optional_int_or_default>
+#              labor_per_shift: <optional_int_or_default>
+#            »»»
+#            ```
+
+#            - Wait for scheduler response. If error, retry once. If still fails, report and stop.
+
+#         4) Final response to user:
+#            - Return the schedule artifact and a short human-friendly summary:
+#              * date, predicted demand, machines_running, fulfilled, backlog_end, operators_required, artifact path.
+#            - Do not include internal session state keys in the user-visible output.
+
+#         5) Flexibility notes to avoid accidental loops:
+#            - If the user re-asks the same scheduling request in the same session, and orchestration_stage == "forecasting_done" and forecast_prediction exists, you may proceed directly to scheduling (do not re-run forecasting unless user asks).
+#            - If the user explicitly requests a fresh forecast, clear session keys and re-run forecast.
+
+#         6) CSV handling examples (for local testing in this environment):
+#            - Local path example (use this path as-is when testing in webui/notebook):
+#              /mnt/data/demo_demand.csv
+#            - Public raw GitHub example (use exactly as provided by user):
+#              https://raw.githubusercontent.com/sathwikshetty33/csv/main/demo_demand.csv
+
+#         7) Do NOT produce long explanations during agent calls. Only send short status updates before calls (1 sentence) and then perform the peer call.
+
+#         8) If user input is ambiguous (no date or no CSV/demand), ask a single clarifying question and stop — do not attempt multiple clarifications.
+
+#       inject_system_purpose: true
+#       inject_response_format: true
+#       inject_user_profile: true
+
+#       # ===========================================================
+#       # Persistence & services
+#       # ===========================================================
+#       session_service:
+#         type: "sql"
+#         database_url: "${ORCHESTRATOR_DATABASE_URL, sqlite:///orchestrator.db}"
+#         default_behavior: "PERSISTENT"
+
+#       artifact_service: *default_artifact_service
+#       artifact_handling_mode: "reference"
+#       enable_embed_resolution: true
+#       enable_artifact_content_instruction: true
+#       data_tools_config: *default_data_tools_config
+
+#       # ===========================================================
+#       # Tools allowed (peer delegation + artifact operations)
+#       # ===========================================================
+#       tools:
+#         - group_name: peer_agent
+#           tool_type: builtin-group
+#         - group_name: artifact_management
+#           tool_type: builtin-group
+#         - group_name: data_analysis
+#           tool_type: builtin-group
+
+#       # ===========================================================
+#       # Agent card (valid skill entries)
+#       # ===========================================================
+#       agent_card:
+#         description: "The central orchestrator for the manufacturing agent network. Manages domain-specific workflows and coordinates all manufacturing agents."
+#         defaultInputModes: [text]
+#         defaultOutputModes: [text, file]
+#         skills:
+#           - id: manufacturing_planning
+#             name: Manufacturing Planning
+#             description: Coordinates forecasting, production, capacity planning, inventory control, and execution workflows.
+#             tags: []
+#           - id: agent_coordination
+#             name: Agent Coordination
+#             description: Routes requests to the correct specialized agent and orchestrates multi-agent pipelines.
+#             tags: []
+#           - id: workflow_execution
+#             name: Workflow Execution
+#             description: Executes multi-step pipelines like forecast then schedule with proper state tracking.
+#             tags: []
+#           - id: artifact_management
+#             name: Artifact Management
+#             description: Handles and returns relevant artifacts such as forecasts, schedules, BOMs, and reports.
+#             tags: []
+
+#       agent_card_publishing:
+#         interval_seconds: 10
+
+#       agent_discovery:
+#         enabled: true
+
+#       inter_agent_communication:
+#         allow_list: ["*"]
+#         request_timeout_seconds: 600
+
+
 # ===============================================================
 # Manufacturing Orchestrator Agent - Solace Agent Mesh Config
+# (Loop-safe, flexible forecasting->scheduling routing, uses peer_agent)
 # ===============================================================
 
 log:
@@ -7,7 +200,6 @@ log:
   log_file_level: INFO
   log_file: orchestrator-agent.log
 
-# Shared SAM base config
 !include ../shared_config.yaml
 
 apps:
@@ -25,103 +217,135 @@ apps:
       agent_name: "ManufacturingOrchestrator"
       display_name: "ManufacturingOrchestrator"
 
-      # Preferred LLM for orchestration
       model: *planning_model
 
+      # Prefer tool usage for deterministic behavior
+      force_tool_usage: true
+      force_tool_usage_for_tasks: true
+      force_task_execution: true
+
       # ===========================================================
-      #  MANUFACTURING-SPECIFIC ORCHESTRATOR INSTRUCTIONS
+      # Orchestrator Instruction (flexible, loop-safe, with date
+      # normalization and strict forecast-vs-schedule triggers)
       # ===========================================================
       instruction: |
-        You are the **Manufacturing Orchestrator Agent**.
+        You are the Manufacturing Orchestrator Agent. Execute pipelines reliably,
+        avoid loops, and translate user inputs where appropriate (silently).
+        Be deterministic: call peer agents using the peer-agent tool (peer_agent).
+        Never ask the user for confirmations that can be inferred or normalized.
 
-        Your role: Coordinate forecasting and scheduling workflows by delegating to specialized agents.
+        -----------------------------
+        High-level behavior
+        -----------------------------
+        1) If user intent is Forecast-only:
+           - Call DemandForecastingAgent only and return its JSON result.
+           - Do NOT call DynamicSchedulingAgent.
+           - Do NOT return a schedule unless the user explicitly requested scheduling.
 
-        ======================================================================
-        AVAILABLE TOOLS
-        ======================================================================
+        2) If user intent is Schedule (user explicitly asked for schedule/production plan):
+           - If the user provided numeric demand (a plain number), call DynamicSchedulingAgent directly.
+           - If the user provided a CSV URL/path, run Forecast → Schedule pipeline (below).
 
-        You have access to these tools for inter-agent communication:
-        - **PeerAgentTool**: Use this to delegate tasks to other agents
+        3) Never treat agent responses as new user messages.
+           Only user-originated messages should trigger pipelines.
 
-        ======================================================================
-        AVAILABLE AGENTS
-        ======================================================================
+        -----------------------------
+        Date handling (automatic, silent)
+        -----------------------------
+        - Accept common human date formats (examples): DD-MM-YYYY, D-M-YYYY, DD/MM/YYYY, D MMM YYYY, "24 Nov 2025", "Nov 24, 2025".
+        - Convert these silently to ISO YYYY-MM-DD before calling any peer agent.
+        - Do NOT ask the user to confirm the converted date.
+        - If no date is present or ambiguous, ask one single clarifying question (e.g. "Which date (YYYY-MM-DD) should I use?") and stop.
 
-        - **DemandForecastingAgent**: Forecasts demand from CSV data
-        - **DynamicSchedulingAgent**: Generates production schedules
+        -----------------------------
+        Intent detection (simple & conservative)
+        -----------------------------
+        - Consider scheduling intent only if the user's message explicitly contains (case-insensitive) any of:
+          "schedule", "production plan", "generate schedule", "create schedule", "production schedule", "plan production", "shop floor plan".
+        - Consider forecast-only if the user's message contains "forecast", "predict demand", "forecast demand", or "what is the demand".
+        - If both are present, prioritize explicit scheduling request (i.e., user wants a schedule).
 
-        ======================================================================
-        WORKFLOW LOGIC
-        ======================================================================
+        -----------------------------
+        Forecast → Schedule pipeline (when CSV present & scheduling requested)
+        -----------------------------
+        1. Normalize date → target_date_iso (YYYY-MM-DD).
+        2. Set session key: orchestration_stage = "forecasting_started"
+        3. Use peer_agent tool to call DemandForecastingAgent exactly once (retry only once on failure).
+           Call format (use peer_agent tool; pass params verbatim; do NOT send freeform conversation):
+           - agent_name: "DemandForecastingAgent"
+           - task: "generate_forecast" (or daily_forecast if appropriate)
+           - params:
+               csv_url: "<EXACT_CSV_URL_OR_PATH_FROM_USER>"
+               target: "<target_date_iso>"
+           Example prompt body (the peer call payload must contain these explicit fields):
+           {
+             "task": "generate_forecast",
+             "params": {"csv_url": "https://raw.githubusercontent.com/sathwikshetty33/csv/main/demo_demand.csv", "target": "2025-11-24"}
+           }
+        4. Wait for response. On success:
+           - Extract prediction = response["prediction"] (must be numeric). Save session keys:
+             orchestration_stage = "forecasting_done"
+             forecast_prediction = <numeric>
+        5. If forecast result missing numeric prediction or error, retry once, otherwise return error to user and STOP.
 
-        **For: "Generate schedule for [date] with CSV [url]"**
+        6. Call DynamicSchedulingAgent exactly once (retry once on failure) using peer_agent:
+           - agent_name: "DynamicSchedulingAgent"
+           - task: "generate_schedule_single_day"
+           - params:
+               date: "<target_date_iso>"
+               demand: <forecast_prediction>
+               (optional) machines: <int>  # only if user provided; otherwise scheduler may use defaults
+               (optional) throughput_per_machine: <int>
+               (optional) labor_per_shift: <int>
+           Example payload:
+           {
+             "task": "generate_schedule_single_day",
+             "params": {"date": "2025-11-24", "demand": 147.52}
+           }
+        7. Wait for scheduler response, then return final schedule artifact and a short user-friendly summary:
+           - date, predicted_demand, machines_running, fulfilled, backlog_end, operators_required, artifact path.
+           - Do NOT include internal session keys.
 
-        Step 1: Call DemandForecastingAgent ONCE
-          - Use PeerAgentTool to delegate
-          - Provide: CSV URL and target date
-          - Wait for forecast result
-        
-        Step 2: After receiving forecast, call DynamicSchedulingAgent ONCE
-          - Use PeerAgentTool to delegate
-          - Provide: date and predicted demand from forecast
-          - Wait for schedule result
-        
-        Step 3: Present schedule to user
-          - Show the final schedule
-          - Workflow complete
+        -----------------------------
+        Forecast-only flow (CSV present but user asked only for forecast)
+        -----------------------------
+        - Normalize date silently.
+        - Call DemandForecastingAgent via peer_agent with same payload (task + params).
+        - Return forecasting JSON artifact; do NOT schedule.
 
-        ======================================================================
-        CRITICAL RULES
-        ======================================================================
+        -----------------------------
+        Numeric-demand direct flow
+        -----------------------------
+        - If user provides plain numeric demand without CSV and asks for a schedule:
+          call DynamicSchedulingAgent directly with given numeric demand and date (normalized).
 
-        1. **Call each agent only ONCE per workflow**
-           - After DemandForecastingAgent responds → call DynamicSchedulingAgent
-           - Do NOT call DemandForecastingAgent again
+        -----------------------------
+        Retry & loop prevention
+        -----------------------------
+        - Retry each peer-agent call at most once (2 total attempts).
+        - Use session keys to remember if forecasting already ran for this user session and target date (avoid re-running).
+        - If the user explicitly requests "fresh forecast" or "re-run", clear these session keys and re-run.
 
-        2. **Use PeerAgentTool to actually invoke agents**
-           - Don't just describe what you would call
-           - Actually execute the tool
+        -----------------------------
+        CSV handling notes
+        -----------------------------
+        - Do NOT rewrite, sanitize, or map raw GitHub URLs to local paths. Pass them as-is.
+        - If a local test path is present (e.g. /mnt/data/demo_demand.csv), pass that exact path when testing locally.
+        - For REST/WebUI use the user-provided URL (e.g. https://raw.githubusercontent.com/sathwikshetty33/csv/main/demo_demand.csv).
 
-        3. **Track workflow state mentally**
-           - Remember what you've already called
-           - Don't repeat agent calls
-
-        4. **Recognize agent responses**
-           - When you receive forecast data → that's a response, not a new request
-           - Extract the demand value and move to scheduling
-
-        ======================================================================
-        SIMPLIFIED EXAMPLE
-        ======================================================================
-
-        User: "Generate schedule for 2025-11-24 with CSV: https://example.com/data.csv"
-
-        You:
-        → "Forecasting demand for 2025-11-24..."
-        → [Use PeerAgentTool for DemandForecastingAgent]
-        → [Wait]
-
-        [Forecast returns: 1500 units]
-
-        You:
-        → "Forecast: 1500 units. Generating schedule..."
-        → [Use PeerAgentTool for DynamicSchedulingAgent with demand=1500]
-        → [DO NOT call forecaster again]
-        → [Wait]
-
-        [Schedule returns]
-
-        You:
-        → Present schedule to user
-        → Done
-
+        -----------------------------
+        User messaging behavior
+        -----------------------------
+        - Before making a long-running call, you may optionally send a single short status update (one sentence).
+        - Do NOT narrate or describe step-by-step internal orchestration.
+        - Only return final results (or a single error message if a step failed after retries).
 
       inject_system_purpose: true
       inject_response_format: true
       inject_user_profile: true
 
       # ===========================================================
-      # PERSISTENCE LAYERS & SERVICES
+      # Persistence & services
       # ===========================================================
       session_service:
         type: "sql"
@@ -135,39 +359,38 @@ apps:
       data_tools_config: *default_data_tools_config
 
       # ===========================================================
-      # BUILT-IN TOOLS (artifact + data ops)
+      # Tools allowed (peer delegation + artifact operations)
       # ===========================================================
       tools:
-        - group_name: artifact_management
+        - group_name: peer_agent
           tool_type: builtin-group
         - group_name: data_analysis
           tool_type: builtin-group
 
       # ===========================================================
-      # ORCHESTRATOR CAPABILITIES / AGENT CARD
+      # Agent card (valid skill entries)
       # ===========================================================
       agent_card:
         description: "The central orchestrator for the manufacturing agent network. Manages domain-specific workflows and coordinates all manufacturing agents."
-
         defaultInputModes: [text]
         defaultOutputModes: [text, file]
-
         skills:
           - id: manufacturing_planning
             name: Manufacturing Planning
-            description: Understands and coordinates manufacturing workflows including forecasting, capacity planning, scheduling, inventory control, and logistics.
-
+            description: Coordinates forecasting, production, capacity planning, inventory control, and execution workflows.
+            tags: []
           - id: agent_coordination
-            name: Manufacturing Agent Coordination
-            description: Chooses and sequences specialized agents to complete tasks like demand forecasting, production scheduling, inventory optimization, etc.
-
-          - id: strategic_workflow_execution
-            name: Strategic Workflow Execution
-            description: Builds multi-step execution plans for manufacturing pipelines and manages data handoffs between agents.
-
+            name: Agent Coordination
+            description: Routes requests to the correct specialized agent and orchestrates multi-agent pipelines.
+            tags: []
+          - id: workflow_execution
+            name: Workflow Execution
+            description: Executes multi-step pipelines like forecast then schedule with proper state tracking.
+            tags: []
           - id: artifact_management
-            name: Manufacturing Artifact Management
-            description: Manages production schedules, demand forecasts, BOMs, SKU datasets, and planning artifacts.
+            name: Artifact Management
+            description: Handles and returns relevant artifacts such as forecasts, schedules, BOMs, and reports.
+            tags: []
 
       agent_card_publishing:
         interval_seconds: 10

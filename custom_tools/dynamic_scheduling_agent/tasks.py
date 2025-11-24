@@ -5,21 +5,18 @@ import numpy as np
 from datetime import datetime, timedelta
 import json
 import uuid
-from typing import Union, Dict, List
 
 # -----------------------
 # Helpers
 # -----------------------
-def _ensure_dir(path):
-    os.makedirs(path, exist_ok=True)
+
 
 def _save_artifact(df: pd.DataFrame, prefix="schedule"):
-    _ensure_dir("/tmp/dynamic_scheduling")
-    fname = f"/tmp/dynamic_scheduling/{prefix}_{uuid.uuid4().hex}.csv"
+    fname = f"./{prefix}_{uuid.uuid4().hex}.csv"
     df.to_csv(fname, index=False)
     return fname
 
-def _normalize_demand_series(demand_input: Union[str, Dict, List], start_date: str, end_date: str) -> pd.Series:
+def _normalize_demand_series(demand_input, start_date: str, end_date: str) -> pd.Series:
     """
     Accepts:
       - JSON-like dict: {"2025-11-20": 500, ...}
@@ -65,12 +62,27 @@ def _normalize_demand_series(demand_input: Union[str, Dict, List], start_date: s
     return series
 
 # -----------------------
-# Core single-day scheduler
+# Core single-day scheduler (SIMPLIFIED TYPE HINTS)
 # -----------------------
-def generate_schedule_single_day(date: str, demand: float, machines: int = 5, throughput_per_machine: int = 100, labor_per_shift: int = 5):
+def generate_schedule_single_day(
+    date: str, 
+    demand: float, 
+    machines: int = 5, 
+    throughput_per_machine: int = 100, 
+    labor_per_shift: int = 5
+):
     """
     Schedule for a single date using an explicit demand value.
-    Returns artifact path and summary.
+    
+    Args:
+        date: Target date in YYYY-MM-DD format (e.g., "2025-11-24")
+        demand: Required production quantity (e.g., 150.0)
+        machines: Number of available machines (default: 5)
+        throughput_per_machine: Units per machine per day (default: 100)
+        labor_per_shift: Operators per machine (default: 5)
+    
+    Returns:
+        Dict with schedule_artifact path, summary, and status
     """
     dt = pd.to_datetime(date)
     required = float(demand)
@@ -98,7 +110,9 @@ def generate_schedule_single_day(date: str, demand: float, machines: int = 5, th
     summary = {
         "date": dt.strftime("%Y-%m-%d"),
         "demand": float(demand),
+        "machines_available": int(machines),
         "machines_running": int(machines_running),
+        "capacity": int(capacity),
         "fulfilled": float(fulfilled),
         "backlog_end": float(backlog_end),
         "operators_required": int(operators_required),
@@ -108,16 +122,47 @@ def generate_schedule_single_day(date: str, demand: float, machines: int = 5, th
     return {"schedule_artifact": artifact, "summary": summary, "status": "success"}
 
 # -----------------------
-# Core multi-day scheduler (accepts demand_map or CSV URL)
+# Core multi-day scheduler (SIMPLIFIED TYPE HINTS - STRING ONLY)
 # -----------------------
-def generate_schedule_multi_day(demand_series: Union[str, Dict, List], start_date: str, end_date: str, machines: int = 5, throughput_per_machine: int = 100, labor_per_shift: int = 5):
+def generate_schedule_multi_day(
+    demand_series: str, 
+    start_date: str, 
+    end_date: str, 
+    machines: int = 5, 
+    throughput_per_machine: int = 100, 
+    labor_per_shift: int = 5
+):
     """
-    demand_series may be:
-      - a JSON dict {"YYYY-MM-DD": demand, ...}
-      - a list [{"date":"YYYY-MM-DD","demand":123}, ...]
-      - a CSV URL or local path to a CSV with date,demand columns
+    Schedule for multiple days using demand series.
+    
+    Args:
+        demand_series: JSON string, CSV URL, or path to CSV with demand data
+                      Examples:
+                      - '{"2025-11-24": 150, "2025-11-25": 200}'
+                      - 'https://example.com/demand.csv'
+                      - '[{"date": "2025-11-24", "demand": 150}]'
+        start_date: Start date in YYYY-MM-DD format
+        end_date: End date in YYYY-MM-DD format
+        machines: Number of available machines (default: 5)
+        throughput_per_machine: Units per machine per day (default: 100)
+        labor_per_shift: Operators per machine (default: 5)
+    
+    Returns:
+        Dict with schedule_artifact path, summary, and status
     """
-    series = _normalize_demand_series(demand_series, start_date, end_date)
+    # Parse demand_series string to appropriate format
+    if isinstance(demand_series, str):
+        # Try to parse as JSON first
+        try:
+            parsed = json.loads(demand_series)
+            demand_input = parsed
+        except json.JSONDecodeError:
+            # Assume it's a URL or file path
+            demand_input = demand_series
+    else:
+        demand_input = demand_series
+    
+    series = _normalize_demand_series(demand_input, start_date, end_date)
     schedule_rows = []
     backlog = 0.0
 
@@ -158,5 +203,33 @@ def generate_schedule_multi_day(demand_series: Union[str, Dict, List], start_dat
 # -----------------------
 # Convenience: schedule directly from CSV URL
 # -----------------------
-def generate_schedule_from_csv(csv_url: str, start_date: str, end_date: str, machines: int = 5, throughput_per_machine: int = 100, labor_per_shift: int = 5):
-    return generate_schedule_multi_day(csv_url, start_date, end_date, machines, throughput_per_machine, labor_per_shift)
+def generate_schedule_from_csv(
+    csv_url: str, 
+    start_date: str, 
+    end_date: str, 
+    machines: int = 5, 
+    throughput_per_machine: int = 100, 
+    labor_per_shift: int = 5
+):
+    """
+    Load demand from CSV and generate schedule.
+    
+    Args:
+        csv_url: URL or path to CSV with date and demand columns
+        start_date: Start date in YYYY-MM-DD format
+        end_date: End date in YYYY-MM-DD format
+        machines: Number of available machines (default: 5)
+        throughput_per_machine: Units per machine per day (default: 100)
+        labor_per_shift: Operators per machine (default: 5)
+    
+    Returns:
+        Dict with schedule_artifact path, summary, and status
+    """
+    return generate_schedule_multi_day(
+        csv_url, 
+        start_date, 
+        end_date, 
+        machines, 
+        throughput_per_machine, 
+        labor_per_shift
+    )
