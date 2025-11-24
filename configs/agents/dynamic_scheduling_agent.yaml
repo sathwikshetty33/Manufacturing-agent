@@ -1,0 +1,142 @@
+# ===============================================================
+# Dynamic Scheduling Agent - Solace Agent Mesh Agent Configuration
+# ===============================================================
+
+log:
+  stdout_log_level: INFO
+  log_file_level: INFO
+  log_file: dynamic_scheduling_agent.log
+
+!include ../shared_config.yaml
+
+apps:
+  - name: "DynamicSchedulingAgent_app"
+    app_base_path: .
+    app_module: solace_agent_mesh.agent.sac.app
+
+    broker:
+      <<: *broker_connection
+
+    app_config:
+      namespace: "${NAMESPACE}"
+      supports_streaming: true
+
+      agent_name: "DynamicSchedulingAgent"
+      display_name: "Dynamic Scheduling Agent"
+
+      model: *planning_model
+
+      force_tool_usage_for_tasks: true
+      force_task_execution: true
+
+      task_modules:
+        - custom_tools.dynamic_scheduling_agent.tasks
+
+      instruction: |
+        You are the Dynamic Scheduling Agent. You ONLY create shop-floor schedules from provided demand
+        — do NOT call any forecasting tools. The orchestrator will provide either:
+         - a numeric demand for a single date, or
+         - a demand series for a date range (list or CSV URL).
+        HARD RULES:
+         - For single-day scheduling call `generate_schedule_single_day`.
+         - For multi-day scheduling call `generate_schedule_multi_day`.
+         - If given a CSV URL, you may call `generate_schedule_from_csv` internally, but ONLY when explicitly asked.
+         - NEVER invoke any forecasting; use demand values supplied by the orchestrator.
+         - Return JSON with { schedule_artifact, summary, status } and produce a CSV artifact.
+
+      tools:
+        - tool_type: python
+          tool_name: generate_schedule_single_day
+          tool_description: "Schedule production for a single date given demand (no forecasting)."
+          component_module: custom_tools.dynamic_scheduling_agent.tasks
+          function_name: generate_schedule_single_day
+
+        - tool_type: python
+          tool_name: generate_schedule_multi_day
+          tool_description: "Schedule production for a date range using an input demand series (dict/list or CSV URL)."
+          component_module: custom_tools.dynamic_scheduling_agent.tasks
+          function_name: generate_schedule_multi_day
+
+        - tool_type: python
+          tool_name: generate_schedule_from_csv
+          tool_description: "Convenience: load demand from CSV and schedule for a date range."
+          component_module: custom_tools.dynamic_scheduling_agent.tasks
+          function_name: generate_schedule_from_csv
+
+      session_service:
+        type: "sql"
+        default_behavior: "PERSISTENT"
+        database_url: "${DYN_SCHED_AGENT_DB, sqlite:///dynamic_scheduling.db}"
+
+      artifact_service: *default_artifact_service
+      artifact_handling_mode: "reference"
+
+      enable_embed_resolution: true
+      enable_artifact_content_instruction: true
+      data_tools_config: *default_data_tools_config
+
+      tasks:
+        - name: generate_schedule_single_day
+          description: "Create a schedule for one date using given demand (no forecasting)."
+          parameters:
+            - name: date
+              type: string
+            - name: demand
+              type: number
+            - name: machines
+              type: integer
+            - name: throughput_per_machine
+              type: integer
+            - name: labor_per_shift
+              type: integer
+          returns: json
+
+        - name: generate_schedule_multi_day
+          description: "Create a multi-day schedule from demand series. 'demand_series' can be a JSON map or a CSV URL."
+          parameters:
+            - name: demand_series
+              type: string
+            - name: start_date
+              type: string
+            - name: end_date
+              type: string
+            - name: machines
+              type: integer
+            - name: throughput_per_machine
+              type: integer
+            - name: labor_per_shift
+              type: integer
+          returns: json
+
+        - name: generate_schedule_from_csv
+          description: "Load demand from CSV URL and create schedule between start_date and end_date."
+          parameters:
+            - name: csv_url
+              type: string
+            - name: start_date
+              type: string
+            - name: end_date
+              type: string
+            - name: machines
+              type: integer
+            - name: throughput_per_machine
+              type: integer
+            - name: labor_per_shift
+              type: integer
+          returns: json
+
+      agent_card:
+        description: "Allocates machines, labor, materials into a real-time shop-floor schedule based on provided demand."
+        defaultInputModes: [text]
+        defaultOutputModes: [text, file]
+        skills: []
+
+      agent_card_publishing:
+        interval_seconds: 10
+
+      agent_discovery:
+        enabled: true
+
+      inter_agent_communication:
+        allow_list: ["ManufacturingOrchestrator", "DemandForecastingAgent", "*"]
+        request_timeout_seconds: 600
