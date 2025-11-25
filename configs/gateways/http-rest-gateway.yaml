@@ -49,8 +49,8 @@ apps:
       sync_mode_timeout_seconds: 300 # Timeout for the legacy v1 synchronous API
 
       # --- Authentication Configuration ---
-      enforce_authentication: false # Set to false to disable auth checks
-      external_auth_service_url: ${EXTERNAL_AUTH_SERVICE_URL, http://localhost:8080}
+      enforce_authentication: true # Set to false to disable auth checks
+      external_auth_service_url: ${EXTERNAL_AUTH_SERVICE_URL, http://localhost:9100}
 
       # --- Development User Identity (used when enforce_authentication is false) ---
       default_user_identity: "sam_dev_user"
